@@ -143,6 +143,9 @@ class DriverControl:
 
         self.follow_heading = None
 
+    TURN_MAX = 66.0 # maximum turn rate
+    DRIVE_MAX = 100.0 # maximum drive rate
+
     # DETWITCH - reduce turn sensitiviy when robot is moving slowly (turning in place)
     # NOTE: speed is not altered only turn
     # @param speed in percent - from -100 to +100 (full reverse to full forward)
@@ -151,27 +154,22 @@ class DriverControl:
     # returns speed (unmodified) and turn based on algorithm below
     def drivetrain_detwitch(self, speed, turn, enabled):
 
-        if not enabled: return speed, turn
+        if not enabled:
+            return speed * self.DRIVE_MAX / 100.0, turn * self.TURN_MAX / 100.0
 
-        # Constants - adjust as needed for robot
-        # TODO: Move this stuff to more logical place
-        SPEED_MIX_LIMIT = 66.0 # upper limit of throttle mixing (above this point, full turn allowed) in PERCENT
-        # NOTE: Next 2 parameters should add up to 100 (throttlemixMinSens + throttlemixSlope = 100)
-        SPEED_MIX_MIN_SENSITIVITY = 33.0 # PERCENT, minimum turn sensitivity point (i.e. when turning in place)
-        SPEED_MIX_SLOPE = 67.0 # rate at which turn sensitivity increases with increased throttle
-        TURN_MAX = 33.0 # absolute maximum turn rate
+        PIVOT_MAX_TURN_SPEED = 33.0
+        PIVOT_MIN_DRIVE_SPEED = 33.0
+        FULL_TURN_DRIVE_SPEED = 66.0
 
-        # turnscale will be used to change how fast we can turn based on speed
-        turnscale = 1.0 # start with full turn speedd
+        turn_scale = PIVOT_MAX_TURN_SPEED / 100.0 # start off with minimum turn rate
+        if (abs(speed) >= PIVOT_MIN_DRIVE_SPEED and abs(speed) < FULL_TURN_DRIVE_SPEED):
+            # linearly increase the turn rate between the drive speed setpoints
+            turn_scale = (PIVOT_MAX_TURN_SPEED / 100.0) + ((self.TURN_MAX - PIVOT_MAX_TURN_SPEED) / 100.0) * (abs(speed) - PIVOT_MIN_DRIVE_SPEED) / (FULL_TURN_DRIVE_SPEED - PIVOT_MIN_DRIVE_SPEED)
+        elif (abs(speed) >= FULL_TURN_DRIVE_SPEED):
+            turn_scale = self.TURN_MAX / 100.0
 
-        if (abs(speed) < SPEED_MIX_LIMIT):
-            speedmix = abs(speed) / SPEED_MIX_LIMIT
-            turnscale = turnscale * ((SPEED_MIX_MIN_SENSITIVITY / 100.0) + (SPEED_MIX_SLOPE / 100.0) * speedmix)
-            self.clamp(turnscale, TURN_MAX / 100.0)
-        else:
-            turnscale = TURN_MAX / 100.0
-
-        turn = turn * turnscale
+        turn = turn * turn_scale
+        speed = speed * self.DRIVE_MAX / 100.0
 
         return speed, turn
 
@@ -207,7 +205,7 @@ class DriverControl:
         return max(min(input, clamp_value), -clamp_value)
     
     # CONTROLLER_DEADBAND - used in case controller has some drift, mostly for turning
-    def controller_deadband(self, input, deadband, max_range = 100.):
+    def controller_deadband(self, input, deadband, max_range = 100.0):
         output = 0.0
         scale = max_range / (max_range - deadband)
         if (abs(input) < deadband):
@@ -226,15 +224,15 @@ class DriverControl:
     # DRIVE_STRAIGHT - will attempt to follow gyro heading when enabled
     def drive_straight(self, speed):
         if (self.gyro is None or not self.gyro.installed):
-            return speed, 0
+            return speed, 0.0
         
         if (self.follow_heading is None):
             self.follow_heading = self.gyro_rotation()
             # print("Follow enabled", self.follow_heading)
-            return speed, 0
+            return speed, 0.0
 
         error = self.follow_heading - self.gyro_rotation()
-        Kp = 3.0
+        Kp = 1.0
         turn = error * Kp
 
         # Note: motors turn 10 revolutions per robot 360deg rotation, or 10 * 24 / 60 = 4 wheel rotations
@@ -269,10 +267,10 @@ class DriverControl:
         # calculate the drivetrain motor velocities from the controller joystick axes
 
         # just in case - make sure there is no turn coming from the joystick unless we want it
-        control_turn = self.controller_deadband(control_turn, 2)
+        control_turn = self.controller_deadband(control_turn, 4.0)
 
         # Select auto follow heading mode if enabled and we are not commanded to turn, and are not waiting on a turn to finish
-        if (enable_drive_straight and control_speed != 0 and control_turn == 0 and self.last_turn == 0):
+        if (enable_drive_straight and control_speed != 0.0 and control_turn == 0.0 and self.last_turn == 0.0):
             auto_speed, auto_turn = self.drive_straight(control_speed)
             safe_speed, _ = self.drivetrain_ramp_limit(auto_speed, 0, enable_ramp_control)
             safe_turn = auto_turn
@@ -319,6 +317,7 @@ class DriverControl:
                 self.rmg.spin(FORWARD, drivetrain_right_side_speed, PERCENT)
             else:
                 self.rmg.spin(FORWARD, drivetrain_right_side_speed * DriverControl.MOTOR_VOLTSCALE, VOLT) # type: ignore
+
 
 def pre_autonomous():
     global ROBOT_INITIALIZED
